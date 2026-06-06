@@ -1,5 +1,5 @@
 """Update LNXlink directly remotely"""
-import re
+import os
 import sys
 import logging
 import time
@@ -18,11 +18,12 @@ class Addon:
         self.lnxlink = lnxlink
         self.last_time = 0
         self.update_interval = 86400  # Check for updates every 24 hours
+        installed_sha = self._installed_sha()
         self.message = {
-            "installed_version": self.lnxlink.version,
-            "latest_version": self.lnxlink.version,
+            "installed_version": installed_sha,
+            "latest_version": installed_sha,
             "release_summary": "",
-            "release_url": "https://github.com/bkbilly/lnxlink/releases/latest",
+            "release_url": "https://github.com/grigorii-horos/lnxlink/commits/master",
         }
 
     def exposed_controls(self):
@@ -50,14 +51,35 @@ class Addon:
 
         return self.message
 
+    @staticmethod
+    def _sha_cache_path():
+        return os.path.expanduser("~/.cache/lnxlink-installed-sha")
+
+    def _installed_sha(self):
+        """Returns installed SHA: from version string for edit, from cache file for pipx"""
+        version = self.lnxlink.version
+        if "+edit-" in version:
+            return version.split("-")[-1]
+        try:
+            with open(self._sha_cache_path(), encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return version
+
+    def _save_installed_sha(self, sha):
+        try:
+            with open(self._sha_cache_path(), "w", encoding="utf-8") as f:
+                f.write(sha)
+        except OSError as err:
+            logger.error(err)
+
     def _latest_version(self):
-        """Gets the currently published version of lnxlink"""
-        url = "https://api.github.com/repos/bkbilly/lnxlink/releases/latest"
+        """Gets the latest commit SHA from the fork"""
+        url = "https://api.github.com/repos/grigorii-horos/lnxlink/commits/master"
         try:
             resp = requests.get(url=url, timeout=5).json()
-            body = re.sub(r"##.*\n", "", resp["body"])
-            self.message["latest_version"] = resp["tag_name"]
-            self.message["release_summary"] = body
+            self.message["latest_version"] = resp["sha"][:7]
+            self.message["release_summary"] = resp["commit"]["message"].splitlines()[0]
             self.message["release_url"] = resp["html_url"]
         except Exception as err:
             logger.error(err)
@@ -71,7 +93,13 @@ class Addon:
                 f"{sys.executable} -m pip install -e {self.lnxlink.path}", timeout=120
             )
         elif method == "pipx":
-            syscommand("pipx upgrade lnxlink", timeout=120)
+            syscommand(
+                "pipx install --force git+https://github.com/grigorii-horos/lnxlink.git",
+                timeout=120,
+            )
+            latest = self.message.get("latest_version", "")
+            if latest:
+                self._save_installed_sha(latest)
         elif method == "flatpak":
             syscommand("flatpak update -y io.github.bkbilly.lnxlink", timeout=120)
         elif method == "snap":
