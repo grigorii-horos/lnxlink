@@ -1,8 +1,10 @@
 """Send rich desktop notifications via notify.send_message"""
-import os
 import logging
+import os
 import tempfile
+
 import requests
+
 from lnxlink.modules.scripts.helpers import import_install_package
 
 logger = logging.getLogger("lnxlink")
@@ -21,7 +23,7 @@ class Addon:
     def _requirements(self):
         self.lib = {
             "notify": import_install_package(
-                "dbus-notification", ">=2026.2.1", "dbus_notification"
+                "dbus-notification", ">=2026.7.0", "dbus_notification"
             ),
         }
 

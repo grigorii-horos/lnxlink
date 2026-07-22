@@ -3,18 +3,20 @@
 # pylint: disable=attribute-defined-outside-init,too-many-instance-attributes
 
 import asyncio
-from dataclasses import dataclass
+import json
+import logging
 import os
 import ssl
 import threading
 import time
-import json
-import logging
 import traceback
+from dataclasses import dataclass
+
 import aiohttp
+import distro
 import paho.mqtt.client as mqtt
 import requests
-import distro
+
 from lnxlink.modules.scripts import helpers
 
 logger = logging.getLogger("lnxlink")
@@ -166,11 +168,11 @@ class MQTT:
         self.client.on_disconnect = self.on_disconnect
         self.client.on_publish = self.on_publish
 
-        keyfile = self.config["mqtt"]["auth"]["keyfile"]
+        keyfile = self.config["mqtt"]["auth"].get("keyfile")
         keyfile = None if keyfile == "" else keyfile
-        certfile = self.config["mqtt"]["auth"]["certfile"]
+        certfile = self.config["mqtt"]["auth"].get("certfile")
         certfile = None if certfile == "" else certfile
-        ca_certs = self.config["mqtt"]["auth"]["ca_certs"]
+        ca_certs = self.config["mqtt"]["auth"].get("ca_certs")
         ca_certs = None if ca_certs == "" else ca_certs
         use_cert = all(option is not None for option in [keyfile, certfile, ca_certs])
         use_tls = self.config["mqtt"]["auth"]["tls"]

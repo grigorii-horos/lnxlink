@@ -1,5 +1,6 @@
 """Track battery levels for all connected devices"""
 from xml.etree import ElementTree
+
 from jeepney import DBusAddress, new_method_call
 from jeepney.io.blocking import open_dbus_connection
 
@@ -76,10 +77,10 @@ class Addon:
         }
 
         for device in self.get_batteries():
-            if len(battery_includes) != 0:
+            if battery_includes:
                 if not any(device["Model"].startswith(x) for x in battery_includes):
                     continue
-            if len(battery_excludes) != 0:
+            if battery_excludes:
                 if any(device["Model"].startswith(x) for x in battery_excludes):
                     continue
 

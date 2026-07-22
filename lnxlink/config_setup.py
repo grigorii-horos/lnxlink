@@ -1,19 +1,39 @@
 #!/usr/bin/env python3
 """Setup the configuration file"""
 
-import os
 import copy
-import subprocess
+import errno
 import logging
+import os
 import shutil
+import subprocess
+import traceback
 from pathlib import Path
 
-import yaml
 import beaupy
-from lnxlink.consts import SERVICEHEADLESS, SERVICEUSER, CONFIGTEMP
+import yaml
+
+from lnxlink.consts import CONFIGTEMP, SERVICEHEADLESS, SERVICEUSER
 from lnxlink.modules import get_modules_info
 
 logger = logging.getLogger("lnxlink")
+
+
+def _write_config(config_path, config):
+    """Write config changes to disk and report permission issues clearly."""
+    try:
+        with open(config_path, "w", encoding="UTF-8") as file:
+            file.write(yaml.dump(config, default_flow_style=False, sort_keys=False))
+        return True
+    except OSError as err:
+        if err.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
+            logger.error(
+                "Could not update configuration file %s because of permission issues.",
+                config_path,
+            )
+        else:
+            logger.error("Could not update configuration file %s: %s", config_path, err)
+    return False
 
 
 def setup_config(config_path):
@@ -26,36 +46,66 @@ def setup_config(config_path):
             with open(config_path, "wb") as config:
                 config.write(CONFIGTEMP.encode())
             logger.info("Created new template: %s", config_path)
-        except IOError:
-            logger.info("Permision denied")
+        except OSError as err:
+            if err.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
+                logger.error(
+                    "Could not create configuration file %s because of permission "
+                    "issues.",
+                    config_path,
+                )
+            else:
+                logger.error(
+                    "Could not create configuration file %s: %s", config_path, err
+                )
             return False
         userprompt_config(config_path)
     validate_config(config_path)
     return True
 
 
-def add_settings(config, name, settings):
+def add_settings(config, name, settings, replace_empty=False):
     """Add missing configuration to yaml file"""
+    if not isinstance(config.get("settings"), dict):
+        config["settings"] = {}
     sys_conf = copy.deepcopy(config)
     sys_conf["settings"][name] = settings
-    missing_keys = check_missing(sys_conf, config, [], [])
+    missing_keys = check_missing(sys_conf, config, [], [], replace_empty)
 
     if len(missing_keys) > 0:
-        with open(config["config_path"], "r", encoding="utf8") as file:
-            new_config = yaml.load(file, Loader=yaml.FullLoader)
-        for keys, value in missing_keys:
-            new_config = add_nested(new_config, keys, value)
-            config = add_nested(config, keys, value)
-            key_path = ".".join(keys)
-            logger.info("Added missing configuration option: %s", key_path)
-        with open(config["config_path"], "w", encoding="UTF-8") as file:
-            file.write(yaml.dump(new_config, default_flow_style=False, sort_keys=False))
+        try:
+            with open(config["config_path"], encoding="utf8") as file:
+                new_config = yaml.load(file, Loader=yaml.FullLoader)
+            for keys, value in missing_keys:
+                new_config = add_nested(new_config, keys, value, replace_empty)
+                config = add_nested(config, keys, value, replace_empty)
+                key_path = ".".join(keys)
+                logger.info("Adding missing configuration option: %s", key_path)
+            success_write = _write_config(config["config_path"], new_config)
+            if not success_write:
+                manual_insert = {}
+                for keys, value in missing_keys:
+                    manual_insert = add_nested(manual_insert, keys, value)
+                manual_yaml = yaml.dump(
+                    manual_insert,
+                    default_flow_style=False,
+                    sort_keys=False,
+                ).rstrip()
+                logger.error(
+                    "Can't write to config file, manual add this: \n%s", manual_yaml
+                )
+
+        except Exception as err:
+            logger.error(
+                "Couldn't edit configuration (%s): %s",
+                err,
+                traceback.format_exc(),
+            )
     return config
 
 
 def validate_config(config_path):
     """Inform user of missing configuration values"""
-    with open(config_path, "r", encoding="utf8") as file:
+    with open(config_path, encoding="utf8") as file:
         user_conf = yaml.load(file, Loader=yaml.FullLoader)
     sys_conf = yaml.safe_load(CONFIGTEMP)
 
@@ -63,26 +113,47 @@ def validate_config(config_path):
     for keys, value in missing_keys:
         key_path = ".".join(keys)
         user_conf = add_nested(user_conf, keys, value)
-        logger.info("Added missing configuration option: %s", key_path)
+        logger.info("Adding missing configuration option: %s", key_path)
 
     if len(missing_keys) > 0:
-        with open(config_path, "w", encoding="UTF-8") as file:
-            file.write(yaml.dump(user_conf, default_flow_style=False, sort_keys=False))
+        success_write = _write_config(config_path, user_conf)
+        if not success_write:
+            manual_insert = {}
+            for keys, value in missing_keys:
+                manual_insert = add_nested(manual_insert, keys, value)
+            manual_yaml = yaml.dump(
+                manual_insert,
+                default_flow_style=False,
+                sort_keys=False,
+            ).rstrip()
+            logger.error(
+                "Can't write to config file, manual add this: \n%s", manual_yaml
+            )
 
 
-def check_missing(sys_conf, user_conf, missing, dirpath):
+def check_missing(sys_conf, user_conf, missing, dirpath, replace_empty=False):
     """Recursive method that returns a list of missing dictionary keys"""
     if isinstance(sys_conf, dict):
         for key, value in sys_conf.items():
             check_path = dirpath + [key]
             if isinstance(user_conf, dict) and key in user_conf:
-                check_missing(value, user_conf[key], missing, check_path)
+                if (
+                    replace_empty
+                    and not isinstance(value, dict)
+                    and user_conf[key] in [None, ""]
+                    and value not in [None, ""]
+                ):
+                    missing.append([check_path, value])
+                else:
+                    check_missing(
+                        value, user_conf[key], missing, check_path, replace_empty
+                    )
             else:
                 missing.append([check_path, value])
     return missing
 
 
-def add_nested(dct, keys, value):
+def add_nested(dct, keys, value, replace_empty=False):
     """
     Adds a nested dictionary item based on a list of keys to an existing dictionary.
 
@@ -97,12 +168,16 @@ def add_nested(dct, keys, value):
     current_level = dct
     for key in keys[:-1]:
         # Create a new dictionary at the current key if it does not exist
-        if key not in current_level:
+        if key not in current_level or not isinstance(current_level[key], dict):
             current_level[key] = {}
         current_level = current_level[key]
 
     # Set the value at the innermost level
-    if keys[-1] not in current_level:
+    if keys[-1] not in current_level or (
+        replace_empty
+        and current_level[keys[-1]] in [None, ""]
+        and value not in [None, ""]
+    ):
         current_level[keys[-1]] = value
     return dct
 
@@ -175,10 +250,8 @@ def userprompt_config(config_path):
         if not statistics:
             config["exclude"].append("statistics")
 
-    with open(config_path, "w", encoding="UTF-8") as file:
-        file.write(yaml.dump(config, default_flow_style=False, sort_keys=False))
-
-    logger.info("\nAll changes have been saved.")
+    if _write_config(config_path, config):
+        logger.info("\nAll changes have been saved.")
     logger.info(
         " MQTT Topic prefix for for monitoring: %s/%s/...",
         config["mqtt"]["prefix"],
@@ -197,7 +270,10 @@ def get_service_user():
     for num, cmd_user in enumerate(["--user", ""], start=1):
         cmd = f"systemctl {cmd_user} is-enabled lnxlink.service"
         stdout = subprocess.run(
-            cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
+            cmd,
+            shell=True,
+            capture_output=True,
+            check=False,
         ).stdout.decode("UTF-8")
         result = stdout.strip()
         if result in ["enabled"]:
@@ -285,8 +361,7 @@ def setup_modules(config_path):
         config["exclude"] = unselected_names
         config["modules"] = None
 
-    with open(config_path, "w", encoding="UTF-8") as file:
-        file.write(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    _write_config(config_path, config)
 
 
 if __name__ == "__main__":

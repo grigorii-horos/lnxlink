@@ -1,5 +1,6 @@
 """Monitor user inactivity duration"""
 import logging
+
 from lnxlink.modules.scripts.helpers import import_install_package
 
 logger = logging.getLogger("lnxlink")
@@ -18,7 +19,7 @@ class Addon:
 
     def _requirements(self):
         self.lib = {
-            "dbus_idle": import_install_package("dbus-idle", ">=2025.5.1", "dbus_idle"),
+            "dbus_idle": import_install_package("dbus-idle", ">=2026.7.0", "dbus_idle"),
         }
 
     def get_info(self):

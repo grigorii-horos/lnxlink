@@ -11,7 +11,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   publish:
@@ -70,6 +70,25 @@ jobs:
             --output /tmp/flatpak-modules-lnxlink \
             --requirements-file /tmp/requirements_pinned.txt
 
+      - name: Update AppStream release notes
+        run: |
+          python3 .github/scripts/update_metainfo_release.py \
+            --version "${{ steps.release.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --file packaging/flatpak/io.github.bkbilly.lnxlink.metainfo.xml
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Commit AppStream release notes
+        run: |
+          VERSION="${{ steps.release.outputs.version }}"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add packaging/flatpak/io.github.bkbilly.lnxlink.metainfo.xml
+          git diff --cached --quiet && echo "No AppStream metadata changes" && exit 0
+          git commit -m "Update AppStream release notes for ${VERSION}"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+
       - name: Clone Flathub repository
         run: |
           git clone \
@@ -87,7 +106,7 @@ jobs:
           cp packaging/flatpak/runlnxlink.sh /tmp/flathub/
 
           # Metadata and icon from the main repo
-          cp io.github.bkbilly.lnxlink.metainfo.xml /tmp/flathub/
+          cp packaging/flatpak/io.github.bkbilly.lnxlink.metainfo.xml /tmp/flathub/
           cp images/logo.png /tmp/flathub/io.github.bkbilly.lnxlink.png
 
           # Generated files

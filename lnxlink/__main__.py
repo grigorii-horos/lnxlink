@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """Start the LNXlink service"""
 
-import os
-import sys
-import time
-import json
-import inspect
-import threading
-import logging
 import argparse
+import copy
+import errno
+import inspect
+import json
+import logging
+import os
 import platform
+import sys
+import threading
+import time
 import traceback
 
-from lnxlink import modules
-from lnxlink import config_setup
-from lnxlink import files_setup
-from lnxlink.mqtt import MQTT
-from lnxlink.system_monitor import MonitorSuspend, GracefulKiller
+from lnxlink import config_setup, files_setup, modules
 from lnxlink.modules.scripts import helpers
+from lnxlink.mqtt import MQTT
+from lnxlink.system_monitor import GracefulKiller, MonitorSuspend
 
 version, path = files_setup.get_version()
 INSTALL_METHOD = files_setup.get_install_method(path)
@@ -52,6 +52,9 @@ class LNXlink:
         self.saved_publish = {}
         self.update_change_interval = 900
         self.discovery_registry_lock = threading.Lock()
+        self.discovery_registry = {}
+        self.discovery_registry_file_enabled = True
+        self.excluded_modules = set()
 
         # Read configuration from yaml file
         self.publ_queue = files_setup.UniqueQueue()
@@ -61,8 +64,14 @@ class LNXlink:
     def start(self, exclude_modules_arg):
         """Run each addon included in the modules folder"""
         conf_exclude = self.config["exclude"]
-        conf_exclude = [] if conf_exclude is None else conf_exclude
+        conf_exclude = [] if conf_exclude is None else list(conf_exclude)
         conf_exclude.extend(exclude_modules_arg)
+        conf_exclude = [
+            module.strip().lower().replace("-", "_")
+            for module in conf_exclude
+            if isinstance(module, str) and module.strip()
+        ]
+        self.excluded_modules = set(conf_exclude)
         loaded_modules = modules.parse_modules(
             self.config["modules"], self.config["custom_modules"], conf_exclude
         )
@@ -88,9 +97,11 @@ class LNXlink:
         threading.Thread(target=self.monitor_queue, daemon=True).start()
         return mqtt_status
 
-    def add_settings(self, name, settings):
+    def add_settings(self, name, settings, replace_empty=False):
         """Adds missing configuration under settings"""
-        self.config = config_setup.add_settings(self.config, name, settings)
+        self.config = config_setup.add_settings(
+            self.config, name, settings, replace_empty
+        )
 
     def publish_monitor_data(self, name, pub_data, retain=True, force_publish=False):
         """Publish info data to mqtt in the correct format"""
@@ -117,8 +128,10 @@ class LNXlink:
         if update_change_time > self.update_change_interval:
             self.prev_publish = {"last_update": time.time()}
         if (
-            self.config["update_on_change"] or isinstance(pub_data, bytes)
-        ) and self.prev_publish.get(topic) == pub_data and not force_publish:
+            (self.config["update_on_change"] or isinstance(pub_data, bytes))
+            and self.prev_publish.get(topic) == pub_data
+            and not force_publish
+        ):
             return
 
         self.prev_publish[topic] = pub_data
@@ -336,31 +349,53 @@ class LNXlink:
                         current_topics,
                         getattr(addon, "prune_stale_discovery", False),
                     )
+        if filter_name is None:
+            self._clear_excluded_discovery_topics()
 
     def _discovery_registry_path(self):
         """Path of the locally stored Home Assistant discovery topic registry."""
+        registry_path = self.config.get("registry_path")
+        if registry_path:
+            return registry_path
+
         config_dir = os.path.dirname(os.path.realpath(self.config_path))
         return os.path.join(config_dir, "discovery_registry.json")
 
     def _load_discovery_registry(self):
         """Load Home Assistant discovery topics published by this instance."""
+        if not self.discovery_registry_file_enabled:
+            return copy.deepcopy(self.discovery_registry)
         try:
             with open(self._discovery_registry_path(), encoding="UTF-8") as registry:
                 data = json.load(registry)
             if isinstance(data, dict):
-                return data
+                self.discovery_registry = data
+                return copy.deepcopy(data)
         except FileNotFoundError:
             pass
         except Exception as err:
             logger.error("Could not read discovery registry: %s", err)
-        return {}
+        return copy.deepcopy(self.discovery_registry)
 
     def _save_discovery_registry(self, registry):
         """Persist Home Assistant discovery topics published by this instance."""
+        self.discovery_registry = copy.deepcopy(registry)
+        if not self.discovery_registry_file_enabled:
+            return
         try:
             with open(self._discovery_registry_path(), "w", encoding="UTF-8") as file:
                 json.dump(registry, file, indent=2, sort_keys=True)
                 file.write("\n")
+        except OSError as err:
+            if err.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
+                self.discovery_registry_file_enabled = False
+                logger.warning(
+                    "Could not write discovery registry to %s because of permission "
+                    "issues. Discovery registry will be stored in memory only.",
+                    self._discovery_registry_path(),
+                )
+            else:
+                logger.error("Could not write discovery registry: %s", err)
         except Exception as err:
             logger.error("Could not write discovery registry: %s", err)
 
@@ -372,6 +407,26 @@ class LNXlink:
         if isinstance(entry, dict):
             return set(entry.get("topics", [])), set(entry.get("stale_topics", []))
         return set(), set()
+
+    def _clear_excluded_discovery_topics(self):
+        """Clear Home Assistant discovery topics for explicitly excluded modules."""
+        if not self.excluded_modules:
+            return
+        with self.discovery_registry_lock:
+            registry = self._load_discovery_registry()
+            updated = False
+            for service in sorted(self.excluded_modules & set(registry)):
+                topics, stale_topics = self._discovery_registry_entry(registry, service)
+                for topic in sorted(topics | stale_topics):
+                    logger.info(
+                        "Clearing excluded module Home Assistant discovery topic: %s",
+                        topic,
+                    )
+                    self.mqtt.publish(topic, payload=None, retain=True)
+                registry.pop(service, None)
+                updated = True
+            if updated:
+                self._save_discovery_registry(registry)
 
     def _sync_discovery_registry(self, service, current_topics, prune_stale):
         """Track discovery topics and clear stale configs for opt-in modules."""
@@ -436,6 +491,16 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     )
     parser.add_argument(
+        "-d",
+        "--log-directory",
+        help="Directory where lnxlink.log will be stored",
+    )
+    parser.add_argument(
+        "-r",
+        "--registry-path",
+        help="Path to the Home Assistant discovery topic registry file",
+    )
+    parser.add_argument(
         "-s",
         "--setup",
         help="Runs only the setup configuration workflow",
@@ -462,7 +527,12 @@ def main():
         parser.print_help()
         parser.exit("\nSomething went wrong, --config condition was not set")
     config_path = os.path.abspath(args.config)
-    files_setup.setup_logger(config_path, args.logging)
+    log_directory = (
+        os.path.abspath(os.path.expanduser(args.log_directory))
+        if args.log_directory
+        else None
+    )
+    files_setup.setup_logger(config_path, args.logging, log_directory)
     config_setup.setup_config(config_path)
     if args.setup:
         logger.info("The configuration exists under the file: %s", config_path)
@@ -479,6 +549,10 @@ def main():
         )
 
     config = files_setup.read_config(config_path)
+    if args.registry_path:
+        config["registry_path"] = os.path.abspath(
+            os.path.expanduser(args.registry_path)
+        )
     lnxlink = LNXlink(config)
 
     # Monitor for system changes (Shutdown/Suspend/Sleep)

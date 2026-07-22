@@ -1,12 +1,13 @@
 """Control and show information of currently playing media"""
-import re
-import hashlib
-import traceback
-import logging
 import base64
-import threading
+import hashlib
+import logging
+import re
 import subprocess
+import threading
+import traceback
 from shutil import which
+
 from lnxlink.modules.scripts.helpers import import_install_package, syscommand
 
 logger = logging.getLogger("lnxlink")
@@ -79,7 +80,7 @@ class Addon:
 
     def _requirements(self):
         self.dbus_mediaplayer = import_install_package(
-            "dbus-mediaplayer", ">=2025.6.0", "dbus_mediaplayer"
+            "dbus-mediaplayer", ">=2026.7.0", "dbus_mediaplayer"
         )
 
     def exposed_controls(self):

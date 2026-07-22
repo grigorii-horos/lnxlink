@@ -1,8 +1,9 @@
 """Monitor signal strength and connection metadata"""
+import logging
 import os
 import re
-import logging
 from shutil import which
+
 from lnxlink.modules.scripts.helpers import import_install_package, syscommand
 
 logger = logging.getLogger("lnxlink")
@@ -26,7 +27,7 @@ class Addon:
     def _requirements(self):
         self.lib = {
             "dbus_nd": import_install_package(
-                "dbus-networkdevices", ">=2026.6.0", "dbus_networkdevices"
+                "dbus-networkdevices", ">=2026.7.0", "dbus_networkdevices"
             ),
         }
 

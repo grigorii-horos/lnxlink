@@ -1,9 +1,10 @@
 """Control global Bluetooth power or connect/disconnect specific devices"""
 
-import re
 import logging
-from typing import Optional, Dict, List, Any
+import re
+from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree
+
 from jeepney import DBusAddress, new_method_call
 from jeepney.io.blocking import open_dbus_connection
 from jeepney.wrappers import DBusErrorResponse
@@ -292,7 +293,7 @@ class Addon:
         paths = self._dbus_paths(BLUEZ_SERVICE, "/org/bluez", [])
         for path in paths:
             if self._has_interface(path, BLUEZ_ADAPTER_INTERFACE):
-                logger.info("Found Bluetooth adapter at %s", path)
+                logger.debug("Found Bluetooth adapter at %s", path)
                 return path
         logger.warning("No Bluetooth adapter found")
         return None

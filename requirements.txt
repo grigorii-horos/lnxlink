@@ -1,7 +1,6 @@
 # System dependencies
 PyYAML>=6.0.1
 aiohttp>=3.9.0
-asyncio>=3.4.3
 beaupy>=3.10.0
 distro>=1.9.0
 inotify>=0.2.10
@@ -13,10 +12,10 @@ requests>=2.31.0
 # Modules dependencies
 PyGObject>=3.44.0
 SpeechRecognition>=3.10.0
-dbus-idle>=2025.5.1
-dbus-mediaplayer>=2025.6.0
-dbus-networkdevices>=2026.6.0
-dbus-notification>=2026.2.1
+dbus-idle>=2026.7.0
+dbus-mediaplayer>=2026.7.0
+dbus-networkdevices>=2026.7.0
+dbus-notification>=2026.7.0
 docker>=7.0.0
 ewmh>=0.1.6
 flask>=3.0.3

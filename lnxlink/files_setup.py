@@ -1,17 +1,16 @@
 """Helper functions to get information from files"""
-import os
-import time
-import logging
 import importlib.metadata
-from logging.handlers import RotatingFileHandler
+import logging
+import os
+import threading
+import time
 from collections import OrderedDict
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import threading
-
 import yaml
-from lnxlink.modules.scripts.helpers import syscommand
 
+from lnxlink.modules.scripts.helpers import syscommand
 
 logger = logging.getLogger("lnxlink")
 
@@ -63,10 +62,13 @@ class UniqueQueue:
             self.queue.clear()
 
 
-def setup_logger(config_path, log_level):
-    """Save logs on the same directory as the config file"""
+def setup_logger(config_path, log_level, log_directory=None):
+    """Configure file logging."""
     Path(config_path).parent.mkdir(parents=True, exist_ok=True)
-    config_dir = os.path.dirname(os.path.realpath(config_path))
+    if log_directory is None:
+        log_directory = os.path.dirname(os.path.realpath(config_path))
+    log_path = Path(log_directory).expanduser()
+    log_path.mkdir(parents=True, exist_ok=True)
     start_sec = str(int(time.time()))[-4:]
     log_formatter = logging.Formatter(
         "%(asctime)s ["
@@ -75,7 +77,7 @@ def setup_logger(config_path, log_level):
     )
 
     file_handler = RotatingFileHandler(
-        f"{config_dir}/lnxlink.log",
+        log_path / "lnxlink.log",
         maxBytes=5 * 1024 * 1024,
         backupCount=1,
     )
@@ -86,7 +88,7 @@ def setup_logger(config_path, log_level):
 
 def read_config(config_path):
     """Reads the config file and prepares module names for import"""
-    with open(config_path, "r", encoding="utf8") as file:
+    with open(config_path, encoding="utf8") as file:
         conf = yaml.load(file, Loader=yaml.FullLoader)
 
     conf["config_path"] = config_path

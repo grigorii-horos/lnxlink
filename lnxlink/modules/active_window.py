@@ -1,11 +1,13 @@
 """Monitor the name and title of the currently focused window"""
 
-import os
 import json
 import logging
+import os
+
 from jeepney import DBusAddress, new_method_call
 from jeepney.io.blocking import open_dbus_connection
-from lnxlink.modules.scripts.helpers import import_install_package, get_display_variable
+
+from lnxlink.modules.scripts.helpers import get_display_variable, import_install_package
 
 logger = logging.getLogger("lnxlink")
 
@@ -44,7 +46,7 @@ class Addon:
                 data = json.loads(reply.body[0])
                 if "focused_window_title" not in data:
                     raise SystemError("WindowQueryTool returned unexpected data format")
-            except SystemError as err:
+            except Exception as err:
                 raise SystemError(
                     "Wayland extension 'WindowQueryTool' not found. "
                     "Please install: https://extensions.gnome.org/extension/8763/window-query-tool"
