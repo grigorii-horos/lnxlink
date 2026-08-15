@@ -25,16 +25,26 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory '*'
+
       - name: Get version and commit SHA
         id: release
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
-            COMMIT=$(git rev-list -n 1 "$VERSION")
+            VERSION="${VERSION#v}"
+            COMMIT=$(git rev-parse "$VERSION" 2>/dev/null || git rev-parse "v$VERSION" 2>/dev/null || echo "")
           else
             VERSION=$(git tag --points-at "${{ github.event.workflow_run.head_sha }}" | head -n1)
+            if [ -z "$VERSION" ]; then
+              VERSION=$(git describe --tags --abbrev=0)
+            fi
             VERSION="${VERSION#v}"
             COMMIT="${{ github.event.workflow_run.head_sha }}"
+          fi
+          if [ -z "$COMMIT" ]; then
+            COMMIT="${{ github.sha }}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
@@ -43,7 +53,31 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.13'
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
+
+      - name: Install Flatpak and runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub org.gnome.Sdk//50
+
+      - name: Build requirements for flatpak-pip-generator
+        run: |
+          COMMIT="${{ steps.release.outputs.commit }}"
+          echo "lnxlink @ git+https://github.com/bkbilly/lnxlink@${COMMIT}" > /tmp/requirements_pinned.txt
+          python3 - << 'EOF' >> /tmp/requirements_pinned.txt
+          with open('requirements.txt', 'r') as f:
+              for line in f:
+                  line = line.strip()
+                  if line and not line.startswith('#') and not line.startswith(('PyGObject', 'opencv-python')):
+                      print(line)
+          EOF
 
       - name: Install flatpak-pip-generator
         run: |
@@ -51,24 +85,34 @@ jobs:
           wget -q https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/pip/flatpak-pip-generator.py
           chmod +x flatpak-pip-generator.py
 
-      - name: Build requirements for flatpak-pip-generator
-        run: |
-          COMMIT="${{ steps.release.outputs.commit }}"
-          echo "lnxlink @ git+https://github.com/bkbilly/lnxlink@${COMMIT}" > /tmp/requirements_pinned.txt
-          python3 - << 'EOF' >> /tmp/requirements_pinned.txt
-          import tomllib
-          with open('pyproject.toml', 'rb') as f:
-              data = tomllib.load(f)
-          for dep in data['project']['dependencies']:
-              print(dep)
-          EOF
-
       - name: Regenerate flatpak-modules-lnxlink.yaml
         run: |
           python3 flatpak-pip-generator.py \
             --yaml \
             --output /tmp/flatpak-modules-lnxlink \
+            --ignore-errors \
+            --runtime org.gnome.Sdk//50 \
+            --prefer-wheels=opencv-python-headless,numpy \
             --requirements-file /tmp/requirements_pinned.txt
+
+      - name: Validate generated flatpak-modules-lnxlink.yaml
+        run: |
+          python3 - << 'EOF'
+          import yaml, sys
+          with open('/tmp/flatpak-modules-lnxlink.yaml') as f:
+              data = yaml.safe_load(f)
+          modules = data.get('modules', [data])
+          for m in modules:
+              if m.get('name') == 'python3-lnxlink':
+                  sources = m.get('sources', [])
+                  if not sources:
+                      print("ERROR: python3-lnxlink has empty sources in generated Flatpak manifest!", file=sys.stderr)
+                      sys.exit(1)
+                  print("Validation passed: python3-lnxlink sources are present.")
+                  sys.exit(0)
+          print("ERROR: python3-lnxlink module not found in generated Flatpak manifest!", file=sys.stderr)
+          sys.exit(1)
+          EOF
 
       - name: Update AppStream release notes
         run: |
@@ -102,7 +146,6 @@ jobs:
 
           # Static files maintained in this repo
           cp packaging/flatpak/io.github.bkbilly.lnxlink.yaml /tmp/flathub/
-          cp packaging/flatpak/flatpak-modules-meson.yaml /tmp/flathub/
           cp packaging/flatpak/runlnxlink.sh /tmp/flathub/
 
           # Metadata and icon from the main repo
@@ -116,16 +159,16 @@ jobs:
           cd /tmp/flathub
           git config user.email "bkbillybk@gmail.com"
           git config user.name "bkbilly"
-          git checkout -b "$BRANCH"
+          git checkout -B "$BRANCH"
           git add .
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "Update to version ${VERSION}"
-          git push origin "$BRANCH"
+          git push --force origin "$BRANCH"
           gh pr create \
             --repo flathub/io.github.bkbilly.lnxlink \
             --head "$BRANCH" \
             --base master \
             --title "Update to ${VERSION}" \
-            --body "Automated update to version ${VERSION}."
+            --body "Automated update to version ${VERSION}." || echo "Pull request already exists"
         env:
           GH_TOKEN: ${{ secrets.FLATHUB_TOKEN }}

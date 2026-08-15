@@ -6,7 +6,7 @@ import time
 
 import requests
 
-from lnxlink.modules.scripts.helpers import syscommand
+from lnxlink.modules.scripts.helpers import find_uv_bin, syscommand
 
 logger = logging.getLogger("lnxlink")
 
@@ -26,6 +26,7 @@ class Addon:
             "latest_version": installed_sha,
             "release_summary": "",
             "release_url": "https://github.com/grigorii-horos/lnxlink/commits/master",
+            "in_progress": False,
         }
 
     def exposed_controls(self):
@@ -88,13 +89,21 @@ class Addon:
 
     def start_control(self, topic, data):
         """Control system"""
+        self.message["in_progress"] = True
+        self.lnxlink.run_module(self.name, self.get_info)
+        try:
+            if self._run_update():
+                self.lnxlink.restart_script()
+        finally:
+            self.message["in_progress"] = False
+            self.lnxlink.run_module(self.name, self.get_info)
+
+    def _run_update(self):
+        """Run the appropriate update command based on install method"""
         method = self.lnxlink.install_method
-        if method == "edit":
-            syscommand(f"git -C {self.lnxlink.path} pull", timeout=15)
-            syscommand(
-                f"{sys.executable} -m pip install -e {self.lnxlink.path}", timeout=120
-            )
-        elif method == "pipx":
+        if "_edit" in method:
+            return self._update_edit(method)
+        if method == "pipx":
             syscommand(
                 "pipx install --force git+https://github.com/grigorii-horos/lnxlink.git",
                 timeout=120,
@@ -102,23 +111,48 @@ class Addon:
             latest = self.message.get("latest_version", "")
             if latest:
                 self._save_installed_sha(latest)
+        elif method == "uv":
+            uv_bin = find_uv_bin() or "uv"
+            syscommand(f"{uv_bin} tool upgrade lnxlink", timeout=120)
         elif method == "flatpak":
             syscommand("flatpak update -y io.github.bkbilly.lnxlink", timeout=120)
-        elif method == "snap":
-            syscommand("snap refresh lnxlink", timeout=120)
         elif method == "aur":
-            _, _, yay = syscommand("which yay", ignore_errors=True)
-            _, _, paru = syscommand("which paru", ignore_errors=True)
-            if yay == 0:
-                syscommand("yay -Syu --noconfirm python-lnxlink", timeout=120)
-            elif paru == 0:
-                syscommand("paru -Syu --noconfirm python-lnxlink", timeout=120)
-            else:
-                logger.warning("No AUR helper found (yay or paru)")
-                return
+            return self._update_aur()
         elif method in ("pip", "system"):
             syscommand(f"{sys.executable} -m pip install -U lnxlink", timeout=120)
         else:
             logger.warning("Update not supported for install method: %s", method)
-            return
-        self.lnxlink.restart_script()
+            return False
+        return True
+
+    def _update_edit(self, method):
+        """Handle update for editable installations"""
+        syscommand(f"git -c safe.directory=* -C {self.lnxlink.path} pull", timeout=15)
+        if "pip" in method:
+            syscommand(
+                f"{sys.executable} -m pip install -e {self.lnxlink.path}",
+                timeout=120,
+            )
+        elif "uv" in method:
+            uv_bin = find_uv_bin() or "uv"
+            syscommand(
+                f"{uv_bin} pip install --python {sys.executable} -e {self.lnxlink.path}",
+                timeout=120,
+            )
+        else:
+            logger.warning("Update not supported for install method: %s", method)
+            return False
+        return True
+
+    def _update_aur(self):
+        """Handle update for AUR installations"""
+        _, _, yay = syscommand("which yay", ignore_errors=True)
+        _, _, paru = syscommand("which paru", ignore_errors=True)
+        if yay == 0:
+            syscommand("yay -Syu --noconfirm python-lnxlink", timeout=120)
+        elif paru == 0:
+            syscommand("paru -Syu --noconfirm python-lnxlink", timeout=120)
+        else:
+            logger.warning("No AUR helper found (yay or paru)")
+            return False
+        return True

@@ -2,8 +2,6 @@
 """Start the LNXlink service"""
 
 import argparse
-import copy
-import errno
 import inspect
 import json
 import logging
@@ -13,15 +11,64 @@ import sys
 import threading
 import time
 import traceback
+from collections import OrderedDict
 
-from lnxlink import config_setup, files_setup, modules
+from lnxlink import config_setup, modules
+from lnxlink.discovery_registry import DiscoveryRegistry
 from lnxlink.modules.scripts import helpers
 from lnxlink.mqtt import MQTT
 from lnxlink.system_monitor import GracefulKiller, MonitorSuspend
 
-version, path = files_setup.get_version()
-INSTALL_METHOD = files_setup.get_install_method(path)
+version, path = helpers.get_version()
+INSTALL_METHOD = helpers.get_install_method()
 logger = logging.getLogger("lnxlink")
+
+
+class UniqueQueue:
+    """
+    A queue that maintains unique named items with a maximum size limit.
+    If an item with the same name is added, it replaces the old one.
+    When full, the oldest item is discarded to make room.
+    """
+
+    def __init__(self, max_size=200):
+        """Initializes the UniqueQueue"""
+        self.queue = OrderedDict()
+        self.max_size = max_size
+        self._lock = threading.Lock()
+
+    def __repr__(self):
+        """Returns a string representation of the queue."""
+        return f"<{self.__class__.__name__} queue: {repr(self.queue)}>"
+
+    def __iter__(self):
+        """Returns an iterator that yields and removes items from the queue in FIFO order"""
+        while True:
+            with self._lock:
+                if not self.queue:
+                    break
+                yield self.queue.popitem(last=False)
+
+    def add_item(self, name, value, retain=True, force_publish=False):
+        """Adds an item to the queue. If the item already exists, it replaces it"""
+        with self._lock:
+            if name in self.queue:
+                del self.queue[name]
+            elif len(self.queue) >= self.max_size:
+                self.queue.popitem(last=False)
+            self.queue[name] = (value, retain, force_publish)
+
+    def get_item(self):
+        """Retrieves and removes the next item from the queue (FIFO)"""
+        with self._lock:
+            if self.queue:
+                return self.queue.popitem(last=False)
+        return None, None
+
+    def clear(self):
+        """Clears all items from the queue"""
+        with self._lock:
+            self.queue.clear()
 
 
 # pylint: disable=too-many-instance-attributes
@@ -51,13 +98,11 @@ class LNXlink:
         self.prev_publish = {}
         self.saved_publish = {}
         self.update_change_interval = 900
-        self.discovery_registry_lock = threading.Lock()
-        self.discovery_registry = {}
-        self.discovery_registry_file_enabled = True
+        self.discovery_registry = DiscoveryRegistry(self.config)
         self.excluded_modules = set()
 
         # Read configuration from yaml file
-        self.publ_queue = files_setup.UniqueQueue()
+        self.publ_queue = UniqueQueue()
         self.mqtt = MQTT(self.config)
         self.stop_event = threading.Event()
 
@@ -205,8 +250,11 @@ class LNXlink:
         while not self.stop_event.is_set():
             if not self.kill:
                 self.run_modules()
-            if self.stop_event.wait(timeout=self.config["update_interval"]):
-                break
+                if self.stop_event.wait(timeout=self.config["update_interval"]):
+                    break
+            else:
+                if self.stop_event.wait(timeout=0.1):
+                    break
         logger.info("Stopped monitor_run")
 
     def monitor_queue(self):
@@ -241,13 +289,26 @@ class LNXlink:
 
     def replace_values_with_none(self, data):
         """Replaces specified values with None recursively"""
-        if isinstance(data, (str, bool, float, int)):
+        if isinstance(data, bytes):
+            try:
+                data = data.decode("utf-8")
+            except Exception:
+                data = None
+        if isinstance(data, str):
+            try:
+                parsed = json.loads(data)
+                if isinstance(parsed, (dict, list)):
+                    return json.dumps(self.replace_values_with_none(parsed))
+            except (json.JSONDecodeError, TypeError):
+                pass
             return None
         if isinstance(data, dict):
             return {
                 key: self.replace_values_with_none(value) for key, value in data.items()
             }
-        return data
+        if isinstance(data, list):
+            return [self.replace_values_with_none(item) for item in data]
+        return None
 
     def temp_connection_callback(self, status):
         """Report the connection status to MQTT server"""
@@ -255,6 +316,9 @@ class LNXlink:
         self.kill = True
         if status:
             logger.info("Power Down detected.")
+            self.mqtt.is_disconnecting = True
+            if hasattr(self.mqtt.client, "is_disconnecting"):
+                self.mqtt.client.is_disconnecting = True
             self.mqtt.send_lwt("OFF")
             if self.config["mqtt"]["clear_on_off"]:
                 for topic, message in self.prev_publish.items():
@@ -344,118 +408,53 @@ class LNXlink:
                             "%s: %s, %s", exp_name, err, traceback.format_exc()
                         )
                 if discovery_ok:
-                    self._sync_discovery_registry(
+                    self.discovery_registry.sync(
                         service,
                         current_topics,
                         getattr(addon, "prune_stale_discovery", False),
+                        self.mqtt,
                     )
         if filter_name is None:
-            self._clear_excluded_discovery_topics()
-
-    def _discovery_registry_path(self):
-        """Path of the locally stored Home Assistant discovery topic registry."""
-        registry_path = self.config.get("registry_path")
-        if registry_path:
-            return registry_path
-
-        config_dir = os.path.dirname(os.path.realpath(self.config_path))
-        return os.path.join(config_dir, "discovery_registry.json")
-
-    def _load_discovery_registry(self):
-        """Load Home Assistant discovery topics published by this instance."""
-        if not self.discovery_registry_file_enabled:
-            return copy.deepcopy(self.discovery_registry)
-        try:
-            with open(self._discovery_registry_path(), encoding="UTF-8") as registry:
-                data = json.load(registry)
-            if isinstance(data, dict):
-                self.discovery_registry = data
-                return copy.deepcopy(data)
-        except FileNotFoundError:
-            pass
-        except Exception as err:
-            logger.error("Could not read discovery registry: %s", err)
-        return copy.deepcopy(self.discovery_registry)
-
-    def _save_discovery_registry(self, registry):
-        """Persist Home Assistant discovery topics published by this instance."""
-        self.discovery_registry = copy.deepcopy(registry)
-        if not self.discovery_registry_file_enabled:
-            return
-        try:
-            with open(self._discovery_registry_path(), "w", encoding="UTF-8") as file:
-                json.dump(registry, file, indent=2, sort_keys=True)
-                file.write("\n")
-        except OSError as err:
-            if err.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
-                self.discovery_registry_file_enabled = False
-                logger.warning(
-                    "Could not write discovery registry to %s because of permission "
-                    "issues. Discovery registry will be stored in memory only.",
-                    self._discovery_registry_path(),
-                )
-            else:
-                logger.error("Could not write discovery registry: %s", err)
-        except Exception as err:
-            logger.error("Could not write discovery registry: %s", err)
-
-    def _discovery_registry_entry(self, registry, service):
-        """Read a registry entry, including the old list-only format."""
-        entry = registry.get(service, {})
-        if isinstance(entry, list):
-            return set(entry), set()
-        if isinstance(entry, dict):
-            return set(entry.get("topics", [])), set(entry.get("stale_topics", []))
-        return set(), set()
-
-    def _clear_excluded_discovery_topics(self):
-        """Clear Home Assistant discovery topics for explicitly excluded modules."""
-        if not self.excluded_modules:
-            return
-        with self.discovery_registry_lock:
-            registry = self._load_discovery_registry()
-            updated = False
-            for service in sorted(self.excluded_modules & set(registry)):
-                topics, stale_topics = self._discovery_registry_entry(registry, service)
-                for topic in sorted(topics | stale_topics):
-                    logger.info(
-                        "Clearing excluded module Home Assistant discovery topic: %s",
-                        topic,
-                    )
-                    self.mqtt.publish(topic, payload=None, retain=True)
-                registry.pop(service, None)
-                updated = True
-            if updated:
-                self._save_discovery_registry(registry)
-
-    def _sync_discovery_registry(self, service, current_topics, prune_stale):
-        """Track discovery topics and clear stale configs for opt-in modules."""
-        with self.discovery_registry_lock:
-            registry = self._load_discovery_registry()
-            previous_topics, previous_stale_topics = self._discovery_registry_entry(
-                registry, service
-            )
-            missing_topics = previous_topics - current_topics
-            topics_to_clear = set()
-            topics_to_mark_stale = set()
-            if prune_stale:
-                topics_to_clear = previous_stale_topics & missing_topics
-                topics_to_mark_stale = missing_topics - topics_to_clear
-
-            for topic in sorted(topics_to_clear):
-                logger.info("Clearing stale Home Assistant discovery topic: %s", topic)
-                self.mqtt.publish(topic, payload=None, retain=True)
-
-            registry[service] = {
-                "topics": sorted(current_topics | topics_to_mark_stale),
-                "stale_topics": sorted(topics_to_mark_stale),
-            }
-            self._save_discovery_registry(registry)
+            self.discovery_registry.clear_excluded(self.excluded_modules, self.mqtt)
 
     def restart_script(self):
         """Restarts itself"""
         logger.info("Restarting LNXlink...")
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def _run_setup_wizard(args, config_path):
+    """Handle setup wizard CLI flags"""
+    try:
+        log_directory = (
+            args.log_directory if args.log_directory else os.path.dirname(config_path)
+        )
+        config_setup.setup_logger(log_directory, args.logging)
+        if not os.path.exists(config_path):
+            logger.info("Config file not found.")
+            if not config_setup.setup_config(config_path):
+                sys.exit()
+            config_setup.validate_config(config_path)
+            config_setup.setup_mqtt(config_path)
+            if args.setup:
+                sys.exit()
+        elif args.setup:
+            logger.info("The configuration exists under the file: %s", config_path)
+            config_setup.setup_mqtt(config_path)
+            sys.exit()
+        elif args.moduleselector:
+            config_setup.setup_modules(config_path)
+            sys.exit()
+
+        if not args.ignore_systemd:
+            config_setup.setup_systemd(config_path)
+        else:
+            logger.info(
+                "By not setting up the SystemD, LNXlink won't be able to start on boot..."
+            )
+    except KeyboardInterrupt:
+        print("\nSetup cancelled.")
+        sys.exit(0)
 
 
 def main():
@@ -469,12 +468,6 @@ def main():
         "--config",
         default="lnxlink_config/lnxlink.yaml",
         help="Configuration file",
-    )
-    parser.add_argument(
-        "-i",
-        "--ignore-systemd",
-        help="Runs without setting up SystemD service",
-        action="store_true",
     )
     parser.add_argument(
         "-e",
@@ -499,6 +492,12 @@ def main():
         "-r",
         "--registry-path",
         help="Path to the Home Assistant discovery topic registry file",
+    )
+    parser.add_argument(
+        "-i",
+        "--ignore-systemd",
+        help="Runs without setting up SystemD service",
+        action="store_true",
     )
     parser.add_argument(
         "-s",
@@ -527,28 +526,13 @@ def main():
         parser.print_help()
         parser.exit("\nSomething went wrong, --config condition was not set")
     config_path = os.path.abspath(args.config)
-    log_directory = (
-        os.path.abspath(os.path.expanduser(args.log_directory))
-        if args.log_directory
-        else None
-    )
-    files_setup.setup_logger(config_path, args.logging, log_directory)
-    config_setup.setup_config(config_path)
-    if args.setup:
-        logger.info("The configuration exists under the file: %s", config_path)
-        sys.exit()
-    if args.moduleselector:
-        logger.info("The configuration exists under the file: %s", config_path)
-        config_setup.setup_modules(config_path)
-        sys.exit()
-    if not args.ignore_systemd:
-        config_setup.setup_systemd(config_path)
-    else:
-        logger.info(
-            "By not setting up the SystemD, LNXlink won't be able to start on boot..."
-        )
+    try:
+        _run_setup_wizard(args, config_path)
+    except KeyboardInterrupt:
+        print("\nSetup cancelled.")
+        sys.exit(0)
 
-    config = files_setup.read_config(config_path)
+    config = config_setup.read_config(config_path)
     if args.registry_path:
         config["registry_path"] = os.path.abspath(
             os.path.expanduser(args.registry_path)
