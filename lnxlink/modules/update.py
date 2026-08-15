@@ -113,13 +113,21 @@ class Addon:
                 self._save_installed_sha(latest)
         elif method == "uv":
             uv_bin = find_uv_bin() or "uv"
-            syscommand(f"{uv_bin} tool upgrade lnxlink", timeout=120)
+            syscommand(
+                f"{uv_bin} tool install --force"
+                " git+https://github.com/grigorii-horos/lnxlink.git",
+                timeout=120,
+            )
         elif method == "flatpak":
             syscommand("flatpak update -y io.github.bkbilly.lnxlink", timeout=120)
         elif method == "aur":
             return self._update_aur()
         elif method in ("pip", "system"):
-            syscommand(f"{sys.executable} -m pip install -U lnxlink", timeout=120)
+            syscommand(
+                f"{sys.executable} -m pip install -U"
+                " git+https://github.com/grigorii-horos/lnxlink.git",
+                timeout=120,
+            )
         else:
             logger.warning("Update not supported for install method: %s", method)
             return False
