@@ -1,6 +1,6 @@
 """Track and control the session lock state"""
-import os
 import logging
+import os
 from shutil import which
 
 from lnxlink.modules.scripts.helpers import syscommand
@@ -9,7 +9,7 @@ logger = logging.getLogger("lnxlink")
 
 
 class Addon:
-    """Addon module"""
+    """Addon module for screen locking and lock state monitoring"""
 
     def __init__(self, lnxlink):
         """Setup addon"""
@@ -68,6 +68,7 @@ class Addon:
             self._lock()
         else:
             self._unlock()
+        self.lnxlink.run_module(self.name, self.get_info())
 
     def _read_lock_state(self):
         read_command = str(self.settings.get("read_command", "")).strip()
@@ -137,7 +138,8 @@ class Addon:
             return env_session
         return None
 
-    def _parse_bool(self, value):
+    @staticmethod
+    def _parse_bool(value):
         if isinstance(value, bool):
             return value
         if value is None:
