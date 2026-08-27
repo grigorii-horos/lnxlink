@@ -1,4 +1,6 @@
 """Update LNXlink directly remotely"""
+import importlib.metadata
+import json
 import logging
 import os
 import sys
@@ -49,6 +51,7 @@ class Addon:
         """Gather information from the system"""
         cur_time = time.time()
         if force_update or cur_time - self.last_time > self.update_interval:
+            self.message["installed_version"] = self._installed_sha()
             self._latest_version()
             self.last_time = cur_time
 
@@ -59,33 +62,82 @@ class Addon:
         return os.path.expanduser("~/.cache/lnxlink-installed-sha")
 
     def _installed_sha(self):
-        """Returns installed SHA: from version string for edit, from cache file for pipx"""
-        version = self.lnxlink.version
+        """Returns installed commit SHA or fallback version"""
+        version = getattr(self.lnxlink, "version", "")
         if "+edit-" in version:
             return version.split("-")[-1]
+        if "+git-" in version:
+            return version.split("-")[-1]
+
+        # 1. From direct_url.json (PEP 610) when installed via pip/uv/pipx
+        try:
+            pkg_name = (
+                __package__.split(".", maxsplit=1)[0] if __package__ else "lnxlink"
+            )
+            dist = importlib.metadata.distribution(pkg_name)
+            raw = dist.read_text("direct_url.json")
+            if raw:
+                data = json.loads(raw)
+                commit_id = data.get("vcs_info", {}).get("commit_id")
+                if commit_id:
+                    return commit_id[:7]
+                url = data.get("url", "")
+                if url.startswith("file://"):
+                    local_dir = url[7:]
+                    git_hash, _, rc = syscommand(
+                        f"git -c safe.directory=* -C {local_dir} rev-parse --short HEAD",
+                        ignore_errors=True,
+                    )
+                    if rc == 0 and git_hash.strip():
+                        return git_hash.strip()
+        except Exception:
+            pass
+
+        # 2. From git repository at lnxlink path
+        if hasattr(self.lnxlink, "path") and self.lnxlink.path:
+            git_hash, _, rc = syscommand(
+                f"git -c safe.directory=* -C {self.lnxlink.path} rev-parse --short HEAD",
+                ignore_errors=True,
+            )
+            if rc == 0 and git_hash.strip():
+                return git_hash.strip()
+
+        # 3. From saved cache file
         try:
             with open(self._sha_cache_path(), encoding="utf-8") as f:
-                return f.read().strip()
+                cached = f.read().strip()
+                if cached:
+                    return cached
         except OSError:
-            return version
+            pass
+
+        return version
 
     def _save_installed_sha(self, sha):
+        if not sha:
+            return
         try:
-            with open(self._sha_cache_path(), "w", encoding="utf-8") as f:
-                f.write(sha)
+            cache_path = self._sha_cache_path()
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                f.write(sha.strip())
         except OSError as err:
-            logger.error(err)
+            logger.error("Failed to save installed SHA to cache: %s", err)
 
     def _latest_version(self):
         """Gets the latest commit SHA from the fork"""
         url = "https://api.github.com/repos/grigorii-horos/lnxlink/commits/master"
         try:
-            resp = requests.get(url=url, timeout=5).json()
-            self.message["latest_version"] = resp["sha"][:7]
-            self.message["release_summary"] = resp["commit"]["message"].splitlines()[0]
-            self.message["release_url"] = resp["html_url"]
+            resp = requests.get(url=url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                self.message["latest_version"] = data["sha"][:7]
+                self.message["release_summary"] = data["commit"]["message"].splitlines()[0]
+                self.message["release_url"] = data["html_url"]
+            else:
+                logger.warning("GitHub API returned status code %s", resp.status_code)
         except Exception as err:
-            logger.error(err)
+            logger.error("Error fetching latest version from GitHub: %s", err)
 
     def start_control(self, topic, data):
         """Control system"""
@@ -108,9 +160,6 @@ class Addon:
                 "pipx install --force git+https://github.com/grigorii-horos/lnxlink.git",
                 timeout=120,
             )
-            latest = self.message.get("latest_version", "")
-            if latest and returncode == 0:
-                self._save_installed_sha(latest)
         elif method == "uv":
             uv_bin = find_uv_bin() or "uv"
             _, _, returncode = syscommand(
@@ -133,6 +182,12 @@ class Addon:
         else:
             logger.warning("Update not supported for install method: %s", method)
             return False
+
+        if returncode == 0:
+            latest = self.message.get("latest_version", "")
+            if latest:
+                self._save_installed_sha(latest)
+                self.message["installed_version"] = latest
         return returncode == 0
 
     def _update_edit(self, method):
@@ -156,6 +211,11 @@ class Addon:
         else:
             logger.warning("Update not supported for install method: %s", method)
             return False
+        if returncode == 0:
+            latest = self.message.get("latest_version", "")
+            if latest:
+                self._save_installed_sha(latest)
+                self.message["installed_version"] = latest
         return returncode == 0
 
     def _update_aur(self):
@@ -173,4 +233,9 @@ class Addon:
         else:
             logger.warning("No AUR helper found (yay or paru)")
             return False
+        if returncode == 0:
+            latest = self.message.get("latest_version", "")
+            if latest:
+                self._save_installed_sha(latest)
+                self.message["installed_version"] = latest
         return returncode == 0
