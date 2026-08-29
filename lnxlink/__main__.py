@@ -2,6 +2,7 @@
 """Start the LNXlink service"""
 
 import argparse
+import copy
 import inspect
 import json
 import logging
@@ -163,6 +164,7 @@ class LNXlink:
         topic = f"{self.config['pref_topic']}/monitor_controls/{subtopic}"
         if pub_data is None:
             return
+        saved_data = copy.deepcopy(pub_data)
         if isinstance(pub_data, bool):
             if pub_data is True:
                 pub_data = "ON"
@@ -190,13 +192,16 @@ class LNXlink:
         ):
             return
 
-        self.saved_publish[subtopic.replace("/", "_")] = pub_data
+        self.saved_publish[subtopic.replace("/", "_")] = saved_data
         self._publish_monitor_message(topic, pub_data, retain)
 
     def invalidate_publish_cache(self):
         """Force current monitor values to publish again after transport failover."""
         self.prev_publish = {}
         self.prev_publish_transport = {}
+        media_addon = getattr(self, "addons", {}).get("media")
+        if media_addon is not None and hasattr(media_addon, "invalidate_cache"):
+            media_addon.invalidate_cache()
 
     def _publish_monitor_message(self, topic, pub_data, retain):
         """Publish a monitor value and cache only transport-accepted data."""
@@ -303,6 +308,7 @@ class LNXlink:
         """Callback for MQTT connect which reports the connection status
         back to MQTT server"""
         logger.info("MQTT connection: %s", self.mqtt.get_rcode_name(rcode))
+        self.invalidate_publish_cache()
         client.subscribe(f"{self.config['pref_topic']}/commands/#")
         self.mqtt.send_lwt("ON")
         if self.config["mqtt"]["discovery"]["enabled"]:
@@ -354,6 +360,7 @@ class LNXlink:
                     self.mqtt.publish(topic, message)
         else:
             logger.info("Power Up detected.")
+            self.invalidate_publish_cache()
             self.mqtt.is_disconnecting = False
             if hasattr(self.mqtt.client, "is_disconnecting"):
                 self.mqtt.client.is_disconnecting = False
@@ -436,13 +443,14 @@ class LNXlink:
                         logger.error(
                             "%s: %s, %s", exp_name, err, traceback.format_exc()
                         )
-                if discovery_ok:
-                    self.discovery_registry.sync(
-                        service,
-                        current_topics,
-                        getattr(addon, "prune_stale_discovery", False),
-                        self.mqtt,
-                    )
+                self.discovery_registry.sync(
+                    service,
+                    current_topics,
+                    getattr(addon, "prune_stale_discovery", False)
+                    if discovery_ok
+                    else False,
+                    self.mqtt,
+                )
         if filter_name is None:
             self.discovery_registry.clear_excluded(self.excluded_modules, self.mqtt)
 
@@ -582,6 +590,10 @@ def main():
         lnxlink.disconnect()
     else:
         monitor_suspend.stop()
+        logger.error(
+            "LNXlink failed to start because the MQTT transport could not connect."
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
