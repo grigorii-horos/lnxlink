@@ -72,6 +72,7 @@ exclude:
   - beacondb
   - boot_select
   - brightness
+  - displays_kscreen
   - fingerprint
   - fullscreen
   - gpio
