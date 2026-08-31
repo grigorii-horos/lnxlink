@@ -77,6 +77,7 @@ exclude:
   - gpio
   - gpu
   - idle
+  - idle_wayland
   - inference_time
   - ir_remote
   - keep_alive
