@@ -181,6 +181,13 @@ class DDCIPMonitor(MonitorBrightness):
                         .decode("ascii", errors="ignore")
                         .strip()
                     )
+            if serial == "Unknown":
+                # Panels that ship no 0xFF descriptor often still carry a
+                # serial in EDID bytes 12-15. Either one stays with the panel,
+                # unlike the i2c bus number.
+                binary_serial = struct.unpack("<I", data[12:16])[0]
+                if binary_serial:
+                    serial = str(binary_serial)
             return manufacturer, name, serial
         except Exception:
             return "Unknown", "Unknown", "Unknown"
