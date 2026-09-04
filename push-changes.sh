@@ -10,7 +10,7 @@ git add -A
 git commit -m "Add custom modules and local agent files
 
 New modules: calendar_next_event, night_light, screen_lock_state,
-theme_switcher, uptime_boot_time, wallpaper_switcher.
+theme_switcher, boot_time, wallpaper_switcher.
 Also include AGENTS.md, .codex and resume.sh."
 
 # Пушимо у форк (origin -> github.com/grigorii-horos/lnxlink)
