@@ -20,12 +20,22 @@ logger = logging.getLogger("lnxlink")
 class MonitorBrightness:
     """Base class for all monitor types."""
 
-    def __init__(self, identifier: str, manufacturer: str, name: str):
+    def __init__(
+        self,
+        identifier: str,
+        manufacturer: str,
+        name: str,
+        serial: Optional[str] = None,
+    ):
         self.identifier = identifier  # Bus path or sysfs path
         self.manufacturer = manufacturer
         self.name = name
-        short_identifier = identifier.split("/")[-1]
-        self.unique_name = f"{manufacturer} {name} {short_identifier}"
+        self.serial = serial if serial and serial != "Unknown" else None
+        # The kernel assigns i2c bus numbers at boot, so they shift between
+        # reboots and take the Home Assistant entity_id with them, silently
+        # breaking automations. The EDID serial stays with the panel.
+        stable_identifier = self.serial or identifier.split("/")[-1]
+        self.unique_name = f"{manufacturer} {name} {stable_identifier}"
         self.last_successful_read = 50
 
     def get_brightness(self, timeout: float = 2.0) -> Optional[int]:
@@ -66,8 +76,10 @@ class MonitorBrightness:
                     data = f.read(256)
 
                 if data.startswith(bytes.fromhex("00 FF FF FF FF FF FF 00")):
-                    mfg, name, _ = DDCIPMonitor.parse_edid(data)
-                    found_displays.append(DDCIPMonitor(i2c_path, mfg, name))
+                    mfg, name, serial = DDCIPMonitor.parse_edid(data)
+                    found_displays.append(
+                        DDCIPMonitor(i2c_path, mfg, name, serial)
+                    )
 
             except PermissionError:
                 issues.add(
