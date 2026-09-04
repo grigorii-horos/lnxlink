@@ -10,14 +10,16 @@ logger = logging.getLogger("lnxlink")
 
 
 class Addon:
-    """Addon module for screen locking and lock state monitoring"""
+    """Addon module for session locking and lock state monitoring"""
 
     def __init__(self, lnxlink):
         """Setup addon"""
-        self.name = "Screen Lock State"
+        self.name = "Session Lock State"
         self.lnxlink = lnxlink
         if which("loginctl") is None:
-            raise RuntimeError("loginctl not found, screen lock state is not supported")
+            raise RuntimeError(
+                "loginctl not found, session lock state is not supported"
+            )
         # Resolve the session once, at startup, instead of on every read/lock/unlock.
         self.user = os.environ.get("USER") or os.environ.get("LOGNAME")
         self.session_id = self._detect_session_id()
@@ -25,7 +27,7 @@ class Addon:
     def exposed_controls(self) -> Dict[str, Dict[str, Any]]:
         """Exposes to home assistant"""
         return {
-            "Screen Lock": {
+            "Session Lock": {
                 "type": "switch",
                 "icon": "mdi:lock",
                 "value_template": "{{ value_json.status }}",
