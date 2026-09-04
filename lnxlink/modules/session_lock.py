@@ -14,7 +14,7 @@ class Addon:
 
     def __init__(self, lnxlink):
         """Setup addon"""
-        self.name = "Session Lock State"
+        self.name = "Session Lock"
         self.lnxlink = lnxlink
         if which("loginctl") is None:
             raise RuntimeError(
