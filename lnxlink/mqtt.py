@@ -131,10 +131,10 @@ class DirectMQTTClient:
                     port=self.config["mqtt"]["port"],
                     keepalive=keepalive,
                 )
-            except Exception as err:
+            except Exception as err2:
                 logger.error(
                     "Error establishing connection to MQTT broker: %s, %s",
-                    err,
+                    err2,
                     traceback.format_exc(),
                 )
                 return False
