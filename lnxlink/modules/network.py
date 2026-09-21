@@ -1,4 +1,4 @@
-"""Monitor real-time upload and download speeds per network interface"""
+"""Monitor real-time upload and download speeds"""
 from datetime import datetime
 
 import psutil
@@ -14,16 +14,46 @@ class Addon:
         self.lnxlink.add_settings(
             "network",
             {
+                "split_interfaces": False,
                 "include": [],
                 "exclude": [],
             },
         )
+        self.split_interfaces = (
+            self.lnxlink.config["settings"]
+            .get("network", {})
+            .get("split_interfaces", False)
+        )
         self.time_old = datetime.now()
-        self.interfaces = self._get_interfaces()
-        self.old_counters = self._read_counters(self.interfaces)
+        if self.split_interfaces:
+            self.interfaces = self._get_interfaces()
+            self.old_counters = self._read_counters(self.interfaces)
+        else:
+            netio = psutil.net_io_counters()
+            self.counters_old = (netio.bytes_recv, netio.bytes_sent)
 
     def exposed_controls(self):
         """Exposes to home assistant"""
+        if not self.split_interfaces:
+            return {
+                "Network Upload": {
+                    "type": "sensor",
+                    "icon": "mdi:access-point-network",
+                    "unit": "Mbit/s",
+                    "state_class": "measurement",
+                    "device_class": "data_rate",
+                    "value_template": "{{ value_json.upload }}",
+                },
+                "Network Download": {
+                    "type": "sensor",
+                    "icon": "mdi:access-point-network",
+                    "unit": "Mbit/s",
+                    "state_class": "measurement",
+                    "device_class": "data_rate",
+                    "value_template": "{{ value_json.download }}",
+                },
+            }
+
         discovery_info = {}
         for interface in self.interfaces:
             discovery_info[f"Network Upload {interface}"] = {
@@ -45,6 +75,38 @@ class Addon:
         return discovery_info
 
     def get_info(self):
+        """Returns Mbps, either combined or per network interface"""
+        if not self.split_interfaces:
+            return self._get_info_combined()
+        return self._get_info_per_interface()
+
+    def _get_info_combined(self):
+        """Returns Mbps summed across all network interfaces"""
+        time_new = datetime.now()
+        netio = psutil.net_io_counters()
+        recv_new = netio.bytes_recv
+        sent_new = netio.bytes_sent
+
+        time_diff = (time_new - self.time_old).total_seconds()
+        self.time_old = time_new
+
+        recv_old, sent_old = self.counters_old
+        recv_diff = recv_new - recv_old
+        sent_diff = sent_new - sent_old
+        self.counters_old = (recv_new, sent_new)
+
+        if time_diff == 0:
+            return {"upload": 0, "download": 0}
+
+        recv_speed = max(0, round(recv_diff * 8 / time_diff / 1024 / 1024, 2))
+        sent_speed = max(0, round(sent_diff * 8 / time_diff / 1024 / 1024, 2))
+
+        return {
+            "upload": sent_speed,
+            "download": recv_speed,
+        }
+
+    def _get_info_per_interface(self):
         """Returns Mbps for each network interface"""
         interfaces = self._get_interfaces()
         if set(interfaces) != set(self.interfaces):
