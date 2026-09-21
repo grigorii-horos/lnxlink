@@ -56,7 +56,7 @@ class Addon:
 
         discovery_info = {}
         for interface in self.interfaces:
-            discovery_info[f"Network Upload {interface}"] = {
+            discovery_info[f"Network {interface} Upload"] = {
                 "type": "sensor",
                 "icon": "mdi:access-point-network",
                 "unit": "Mbit/s",
@@ -64,7 +64,7 @@ class Addon:
                 "device_class": "data_rate",
                 "value_template": f"{{{{ value_json.get('{interface}', {{}}).get('upload') }}}}",
             }
-            discovery_info[f"Network Download {interface}"] = {
+            discovery_info[f"Network {interface} Download"] = {
                 "type": "sensor",
                 "icon": "mdi:access-point-network",
                 "unit": "Mbit/s",
