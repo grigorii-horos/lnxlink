@@ -109,8 +109,21 @@ class DirectMQTTClient:
                 port=self.config["mqtt"]["port"],
                 keepalive=keepalive,
             )
-        except ssl.SSLCertVerificationError:
-            logger.info("TLS not verified, using insecure connection instead")
+        except ssl.SSLCertVerificationError as err:
+            if not self.config["mqtt"]["auth"].get("tls_allow_insecure", False):
+                logger.error(
+                    "TLS certificate verification failed for MQTT broker %s:%s: %s",
+                    self.config["mqtt"]["server"],
+                    self.config["mqtt"]["port"],
+                    err,
+                )
+                return False
+            logger.warning(
+                "TLS certificate verification failed for MQTT broker %s:%s: %s",
+                self.config["mqtt"]["server"],
+                self.config["mqtt"]["port"],
+                err,
+            )
             self.client.tls_insecure_set(True)
             try:
                 self.client.connect(
@@ -118,10 +131,10 @@ class DirectMQTTClient:
                     port=self.config["mqtt"]["port"],
                     keepalive=keepalive,
                 )
-            except Exception as err:
+            except Exception as err2:
                 logger.error(
                     "Error establishing connection to MQTT broker: %s, %s",
-                    err,
+                    err2,
                     traceback.format_exc(),
                 )
                 return False
