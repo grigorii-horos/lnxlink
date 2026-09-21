@@ -458,6 +458,11 @@ def _prompt_mqtt_broker(config):
             input(f" Client key file [{mqtt['auth']['keyfile']}]: ")
             or mqtt["auth"]["keyfile"]
         )
+        mqtt["auth"]["tls_allow_insecure"] = _query_true_false(
+            "Allow falling back to an insecure connection if certificate "
+            "verification fails",
+            mqtt["auth"].get("tls_allow_insecure", False),
+        )
 
 
 def _prompt_homeassistant_api(config):
