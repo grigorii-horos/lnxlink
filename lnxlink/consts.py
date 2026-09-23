@@ -46,6 +46,7 @@ mqtt:
     user: 'user'
     pass: 'pass'
     tls: false
+    tls_allow_insecure: false
     keyfile: ""
     certfile: ""
     ca_certs: ""

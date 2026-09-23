@@ -1,5 +1,6 @@
 """A collection of helper functions"""
 import importlib.metadata
+import inspect
 import logging
 import os
 import shutil
@@ -68,31 +69,40 @@ def get_version():
     return version, path
 
 
+def _get_caller_file():
+    """Find the filename of the caller outside helpers.py"""
+    frame = inspect.currentframe()
+    current_file = globals().get("__file__")
+    while frame:
+        if frame.f_code.co_filename != current_file:
+            return os.path.basename(frame.f_code.co_filename)
+        frame = frame.f_back
+    return ""
+
+
 # pylint: disable=consider-using-with
 def syscommand(command, ignore_errors=False, timeout=3, background=False, stdin=None):
     """Global subprocess command"""
-    logger.debug("Executing command: %s", command)
+    caller = _get_caller_file()
+    prefix = f"[{caller}] " if caller else ""
+    logger.debug("%sExecuting command: %s", prefix, command)
 
     shell = not isinstance(command, list)
 
-    stdin_bytes = None
-    if stdin is not None:
-        if isinstance(stdin, str):
-            stdin_bytes = stdin.encode("UTF-8")
-        else:
-            stdin_bytes = stdin
+    if isinstance(stdin, str):
+        stdin = stdin.encode("UTF-8")
 
     if background:
         proc = subprocess.Popen(
             command,
             shell=shell,
-            stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        if stdin_bytes is not None:
+        if stdin is not None:
             try:
-                proc.stdin.write(stdin_bytes)
+                proc.stdin.write(stdin)
                 proc.stdin.close()
             except Exception:
                 pass
@@ -106,7 +116,7 @@ def syscommand(command, ignore_errors=False, timeout=3, background=False, stdin=
     try:
         result = subprocess.run(
             command,
-            input=stdin_bytes,
+            input=stdin,
             shell=shell,
             check=False,
             capture_output=True,
@@ -131,14 +141,13 @@ def syscommand(command, ignore_errors=False, timeout=3, background=False, stdin=
     stderr = stderr.decode("UTF-8", errors="replace").strip()
 
     if timed_out:
-        timeout_msg = f"Command timed out after {timeout} seconds"
-        stderr = f"{stderr}\n{timeout_msg}".strip()
+        stderr = f"{stderr}\nCommand timed out after {timeout} seconds".strip()
 
     if returncode != 0 and ignore_errors is False:
         if timed_out:
-            logger.error("Timeout with command: %s (%s)", command, stderr)
+            logger.error("%sTimeout with command: %s (%s)", prefix, command, stderr)
         else:
-            logger.error("Error with command: %s (%s)", command, stderr)
+            logger.error("%sError with command: %s (%s)", prefix, command, stderr)
 
     return stdout, stderr, returncode
 
@@ -205,35 +214,7 @@ def import_install_package(package, req_version="", syspackage=None):
     if current_version is None or needs_update(current_version, req_version):
         package_version = f"{package}{req_version}"
         logger.info("Installing %s...", package_version)
-        uv_bin = find_uv_bin()
-        returncode = -1
-        if uv_bin:
-            args = [
-                uv_bin,
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--break-system-packages",
-                "-U",
-                "--quiet",
-                package_version,
-            ]
-            _, _, returncode = syscommand(args, ignore_errors=True, timeout=None)
-
-        if returncode != 0:
-            args = [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--break-system-packages",
-                "-U",
-                "--quiet",
-                package_version,
-            ]
-            _, _, returncode = syscommand(args, ignore_errors=True, timeout=None)
-        if returncode != 0:
+        if not install_package(package_version, upgrade=True, quiet=True):
             try:
                 if isinstance(syspackage, tuple):
                     return __import__(syspackage[0], fromlist=syspackage[1])
@@ -249,6 +230,55 @@ def import_install_package(package, req_version="", syspackage=None):
     except Exception as err:
         logger.error("Can't import package %s: %s", package, err)
         return None
+
+
+def install_package(package, upgrade=True, editable=False, quiet=True, timeout=None):
+    """Installs or upgrades a Python package using uv or pip with fallback"""
+    uv_bin = find_uv_bin()
+    returncode = -1
+
+    flags = []
+    if editable:
+        flags.append("-e")
+    if upgrade:
+        flags.append("-U")
+    if quiet:
+        flags.append("--quiet")
+
+    if uv_bin:
+        args = (
+            [
+                uv_bin,
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--break-system-packages",
+            ]
+            + flags
+            + [package]
+        )
+        _, _, returncode = syscommand(args, ignore_errors=True, timeout=timeout)
+
+    if returncode != 0:
+        args = (
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--break-system-packages",
+            ]
+            + flags
+            + [package]
+        )
+        _, _, returncode = syscommand(args, ignore_errors=True, timeout=timeout)
+
+    if returncode != 0:
+        args = [sys.executable, "-m", "pip", "install"] + flags + [package]
+        _, _, returncode = syscommand(args, ignore_errors=True, timeout=timeout)
+
+    return returncode == 0
 
 
 def needs_update(current_version, request_version):

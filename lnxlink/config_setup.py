@@ -1,5 +1,6 @@
 """Setup the configuration file"""
 
+# pylint: disable=import-outside-toplevel
 import copy
 import errno
 import logging
@@ -11,7 +12,6 @@ import traceback
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import beaupy
 import yaml
 
 from lnxlink.consts import CONFIGTEMP, SERVICEHEADLESS, SERVICEUSER
@@ -167,6 +167,8 @@ def setup_systemd(config_path):
 
 def setup_modules(config_path):
     """Asks user which modules to include in the configuration"""
+    import beaupy
+
     with open(config_path, encoding="UTF-8") as file:
         config = yaml.safe_load(file)
 
@@ -455,6 +457,11 @@ def _prompt_mqtt_broker(config):
         mqtt["auth"]["keyfile"] = (
             input(f" Client key file [{mqtt['auth']['keyfile']}]: ")
             or mqtt["auth"]["keyfile"]
+        )
+        mqtt["auth"]["tls_allow_insecure"] = _query_true_false(
+            "Allow falling back to an insecure connection if certificate "
+            "verification fails",
+            mqtt["auth"].get("tls_allow_insecure", False),
         )
 
 
